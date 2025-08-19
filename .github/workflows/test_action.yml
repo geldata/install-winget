@@ -1,4 +1,4 @@
-name: 'Test Action'
+name: "Test Action"
 
 on:
   workflow_dispatch:
@@ -6,101 +6,71 @@ on:
     - cron: 0 0 * * *
   push:
     branches:
-    - main
-    - develop
+      - main
+      - develop
   pull_request:
     branches:
-    - main
-    - develop
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+      - main
+      - develop
 
 jobs:
-  test-job:
-    name: Test Job (No GitHub token)
+  test-default:
+    name: Test default and latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ 'windows-latest' ]
+        os:
+          - "windows-2022"
+          - "windows-2025"
+          - "windows-11-arm"
+          - "windows-latest"
+        winget-version: ["default", "latest"]
     runs-on: ${{ matrix.os }}
     steps:
-    - name: Install winget
-      id: install-winget
-      uses: Cyberboss/install-winget@main
+      - uses: actions/checkout@v5
 
-    - name: Check Version
-      shell: bash
-      run: |
-        VERSION="${{ steps.install-winget.outputs.winget-version }}"
-        if [ -z "$VERSION" ]; then
-          exit 1
-        fi
-        echo $VERSION
+      - name: Install winget
+        id: setup-winget
+        uses: ./
 
-    - name: Install wingetcreate
-      run: winget install wingetcreate --disable-interactivity --accept-source-agreements --accept-package-agreements
+      - name: Check Version
+        shell: bash
+        run: |
+          VERSION="${{ steps.setup-winget.outputs.winget-version }}"
+          if [ -z "$VERSION" ]; then
+            exit 1
+          fi
+          echo $VERSION
 
-  test-job-with-token:
-    name: Test Pinned Job with GitHub Token
+      - name: Install wingetcreate
+        run: winget install wingetcreate --disable-interactivity --accept-source-agreements --accept-package-agreements
+
+  test-pinned:
+    name: Test pinned version
     strategy:
       fail-fast: false
       matrix:
-        os: [ 'windows-2025', 'windows-2025', 'windows-latest' ]
-        repeat: [ 'a', 'b' ]
+        os:
+          - "windows-2022"
+          - "windows-2025"
+          - "windows-11-arm"
+          - "windows-latest"
+        winget-version: ["1.11.x", "1.9.25200", "<1.12"]
     runs-on: ${{ matrix.os }}
     steps:
-    - name: Echo Runner OS version
-      shell: powershell
-      run: (Get-WmiObject Win32_OperatingSystem).Caption
+      - name: Echo Runner OS version
+        shell: powershell
+        run: (Get-WmiObject Win32_OperatingSystem).Caption
 
-    - name: Install winget
-      id: install-winget
-      uses: Cyberboss/install-winget@main
-      with:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v5
 
-    - name: Check Version
-      shell: bash
-      run: |
-        VERSION="${{ steps.install-winget.outputs.winget-version }}"
-        if [ -z "$VERSION" ]; then
-          exit 1
-        fi
-        echo $VERSION
+      - name: Install winget
+        id: setup-winget
+        uses: ./
+        with:
+          winget-version: ${{ matrix.winget-version }}
 
-    - name: Install wingetcreate
-      run: winget install wingetcreate --disable-interactivity --accept-source-agreements
-
-  test-latest-with-token:
-    name: Test Latest Job with GitHub Token
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ 'windows-2022', 'windows-2025', 'windows-latest' ]
-        repeat: [ 'a', 'b' ]
-    runs-on: ${{ matrix.os }}
-    steps:
-    - name: Echo Runner OS version
-      shell: powershell
-      run: (Get-WmiObject Win32_OperatingSystem).Caption
-
-    - name: Install winget
-      id: install-winget
-      uses: Cyberboss/install-winget@main
-      with:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        wget_release_id: latest
-
-    - name: Check Version
-      shell: bash
-      run: |
-        VERSION="${{ steps.install-winget.outputs.winget-version }}"
-        if [ -z "$VERSION" ]; then
-          exit 1
-        fi
-        echo $VERSION
-
-    - name: Install wingetcreate
-      run: winget install wingetcreate --disable-interactivity --accept-source-agreements
+      - name: Check Version
+        shell: bash
+        run: |
+          npx semver -r '${{ matrix.winget-version }}' '${{ steps.setup-winget.outputs.winget-version }}'

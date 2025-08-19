@@ -1,26 +1,24 @@
-name: Install winget
-description: Installs a version of winget
-author: Dominion/Cyberboss
+name: Setup winget
+description: Set up a winget CLI on a Windows host
 branding:
   icon: arrow-down-circle
   color: blue
 inputs:
-  GITHUB_TOKEN:
-    description: 'No scopes GitHub token for querying the API and downloading from winget-cli releases'
+  winget-version:
+    description: |
+      Version range or exact version of a Python version to use, using
+      SemVer's version range syntax or 'latest' for the latest stable
+      version of winget. To see what versions are available,
+      look at https://api.github.com/repos/microsoft/winget-cli/releases.
+      Defaults to `>=1.9.25200` (which is the oldest supported version
+      that is installable by this action).
     required: false
-    default: 'NONE'
-  wget_release_id:
-    description: 'Specify desired release-id of winget can be specified here. By default, a recent stable release will be selected by the action author. To see what versions are available, look into https://api.github.com/repos/microsoft/winget-cli/releases'
-    required: false
-    default: '164835566' # latest can be used here
-
+    default: ">=1.9.25200"
 outputs:
   winget-version:
-    description: "The version of winget installed"
+    description: "The installed winget version. Useful when given a version range as input."
     value: ${{ steps.winget-version.outputs.winget-version }}
 runs:
-# Hacked together https://github.com/microsoft/winget-cli/issues/1861#issuecomment-1352784247
-# https://github.com/microsoft/winget-cli/issues/700#issuecomment-874084714
   using: composite
   steps:
     - name: Check runner OS is Windows
@@ -38,122 +36,301 @@ runs:
         echo "version=${version}" >> $env:GITHUB_OUTPUT
         echo $version
 
-    - name: Windows Server 2025 Simple Setup
-      if: steps.os_check.outputs.version != 'Microsoft Windows Server 2022 Datacenter'
+    - name: Normalize winget version specification
       shell: powershell
-      run: winget upgrade winget --accept-package-agreements --accept-source-agreements --disable-interactivity
-
-    - name: Download Microsoft.UI.Xaml v2.8.6
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
-      shell: powershell
+      id: normalize_spec
       run: |
+        $spec = '${{ inputs.winget-version }}'
+        if ([string]::IsNullOrWhiteSpace($spec)) { $spec = 'default' }
+        if ($spec -eq 'default') { $spec = '>=1.9.25200' }
+
+        Write-Host "Normalized version spec: '$spec'"
+        echo "winget_spec=$spec" >> $env:GITHUB_OUTPUT
+
+    - name: Check installed winget version and determine if installation needed
+      shell: powershell
+      id: version_check
+      run: |
+        $ErrorActionPreference = 'Stop'
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri https://www.nuget.org/api/v2/package/Microsoft.UI.Xaml/2.8.6 -OutFile .\microsoft.ui.xaml.2.8.6.zip
 
-    - name: Unzip Microsoft.UI.Xaml v2.8.6
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
-      shell: powershell
-      run: |
-        Expand-Archive .\microsoft.ui.xaml.2.8.6.zip
+        # Source shared utilities
+        . "${{ github.action_path }}\winget-utils.ps1"
 
-    - name: Download Microsoft.VCLibs.x64.14.00.Desktop
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
-      shell: powershell
-      run: |
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx -OutFile Microsoft.VCLibs.x64.14.00.Desktop.appx
+        $minSupported = [version]'1.9.25200'
+        $spec = '${{ steps.normalize_spec.outputs.winget_spec }}'
 
-    - name: Determine Latest winget release via GitHub API
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
-      id: github_api
-      shell: powershell
-      run: |
-        $ProgressPreference = 'SilentlyContinue'
-        if ("${{ inputs.GITHUB_TOKEN }}" -ne "NONE") {
-          $headers = @{ "Authorization" = "Bearer ${{ inputs.GITHUB_TOKEN }}" }
-          Write-Host "Token present"
+        Write-Host "Checking installed WinGet version against spec: '$spec' ..."
+
+        $installedVersion = Get-InstalledWingetVersion
+
+        if ($installedVersion) {
+          Write-Host "Found installed winget version: $installedVersion"
+
+          # Check if installed version satisfies the spec
+          if (Test-VersionSatisfiesSpec $installedVersion $spec) {
+            Write-Host "Installed version $installedVersion satisfies spec '$spec'. No installation needed."
+            echo "installation_needed=false" >> $env:GITHUB_OUTPUT
+            echo "installed_version=$installedVersion" >> $env:GITHUB_OUTPUT
+            exit 0
+          } else {
+            Write-Host "Installed version $installedVersion does not satisfy spec '$spec'."
+          }
         } else {
-          $headers = @{}
-          Write-Host "No token present"
+          Write-Host "No winget installation found."
         }
 
-        $releaseURL = "https://api.github.com/repos/microsoft/winget-cli/releases/${{ inputs.wget_release_id }}"
-        $gitHubReleasesResponse = Invoke-RestMethod $releaseURL -Headers $headers
-        $wingetReleaseAssets = $gitHubReleasesResponse.assets
-        $latestWingetMsixBundleUri = $wingetReleaseAssets.browser_download_url | Where-Object {$_.EndsWith(".msixbundle")}
-        $latestWingetLicenseXmlUri = $wingetReleaseAssets.browser_download_url | Where-Object {$_.EndsWith("License1.xml")}
-        Write-Host "latest_winget_msix_bundle_uri=$latestWingetMsixBundleUri"
-        Write-Host "latest_winget_license_xml_uri=$latestWingetLicenseXmlUri"
-        Write-Output "latest_winget_msix_bundle_uri=$latestWingetMsixBundleUri" >> $Env:GITHUB_OUTPUT
-        Write-Output "latest_winget_license_xml_uri=$latestWingetLicenseXmlUri" >> $Env:GITHUB_OUTPUT
+        echo "installation_needed=true" >> $env:GITHUB_OUTPUT
+        echo "installed_version=$installedVersion" >> $env:GITHUB_OUTPUT
 
-    - name: Download winget
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
+    - name: Fetch winget releases from Github
+      if: steps.version_check.outputs.installation_needed == 'true'
+      id: github_releases
+      uses: actions/github-script@v7
+      with:
+        retries: 3
+        retry-exempt-status-codes: 400,401
+        result-encoding: string
+        script: |
+          const releases = await github.paginate(
+            github.rest.repos.listReleases,
+            { owner: "microsoft", repo: "winget-cli" }
+          );
+
+          // ignore draft and prerelease releases
+          const published = releases.filter(r => !r.draft && !r.prerelease);
+
+          // Normalize tags to MAJOR.MINOR.PATCH (strip leading "v", drop pre-release/build, pad missing parts)
+          const normalizeSemver = (tag) => {
+            const t = tag.replace(/^v/i, '');
+            const m = t.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+            if (!m) return null; // not a version-like tag
+            const major = String(Number(m[1]));
+            const minor = m[2] !== undefined ? String(Number(m[2])) : '0';
+            const patch = m[3] !== undefined ? String(Number(m[3])) : '0';
+            return `${major}.${minor}.${patch}`;
+          };
+
+          // Collect, normalize, filter invalid, and de-duplicate while preserving order
+          const seen = new Set();
+          const normalized = [];
+          for (const r of published) {
+            const n = normalizeSemver(r.tag_name || '');
+            if (n && !seen.has(n)) {
+              seen.add(n);
+              normalized.push({
+                version: n,
+                tag: r.tag_name
+              });
+            }
+          }
+
+          return JSON.stringify(normalized, null, 2);
+
+    - name: Resolve target winget version from releases
+      if: steps.version_check.outputs.installation_needed == 'true'
+      shell: powershell
+      id: resolve_target
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $ProgressPreference = 'SilentlyContinue'
+
+        # Source shared utilities
+        . "${{ github.action_path }}\winget-utils.ps1"
+
+        $minSupported = [version]'1.9.25200'
+        $spec = '${{ steps.normalize_spec.outputs.winget_spec }}'
+
+        Write-Host "Resolving WinGet version for spec: '$spec' ..."
+        $releases = @'
+        ${{ steps.github_releases.outputs.result }}
+        '@ | ConvertFrom-Json
+        $releases =
+          $releases |
+          ForEach-Object {
+            [pscustomobject]@{ Version = [version]$_.version; Tag = $_.tag }
+          } |
+          Sort-Object -Property Version -Descending
+
+        if (-not $releases) { throw "Could not fetch winget-cli releases." }
+
+        # Always resolve the concrete target for the spec (latest, 1.11, exact, comparators)
+        $target = Select-Version -spec $spec -releases $releases
+        if (-not $target) { throw "No winget-cli release matches spec '$spec'." }
+
+        $desiredVersion = $target.Version
+        $tag = $target.Tag
+        Write-Host "Resolved spec '$spec' -> $desiredVersion ($tag)"
+
+        if ($desiredVersion -lt $minSupported) {
+          throw "$desiredVersion is too old, but minimum supported winget version is $minSupported."
+        }
+
+        echo "desired_version=${desiredVersion}" >> $env:GITHUB_OUTPUT
+        echo "final_version=${desiredVersion}" >> $env:GITHUB_OUTPUT
+
+    - name: Determine download URLs
+      if: steps.version_check.outputs.installation_needed == 'true'
+      id: github_api
+      uses: actions/github-script@v7
+      with:
+        retries: 3
+        retry-exempt-status-codes: 400,401
+        script: |
+          const release = await github.rest.repos.getReleaseByTag({
+            owner: "microsoft",
+            repo: "winget-cli",
+            tag: "v${{ steps.resolve_target.outputs.desired_version }}"
+          });
+
+          const urls = (release.data.assets ?? []).map(a => a.browser_download_url);
+          const pick = (suffix) => urls.find(u => u.endsWith(suffix)) ?? '';
+
+          const msix = pick('.msixbundle');
+          const licenseXml = pick('License1.xml');
+          const depsZip = pick('DesktopAppInstaller_Dependencies.zip');
+
+          core.info(`winget_msix_bundle_uri=${msix}`);
+          core.info(`winget_license_xml_uri=${licenseXml}`);
+          core.info(`winget_dependencies_uri=${depsZip}`);
+
+          core.setOutput('winget_msix_bundle_uri', msix);
+          core.setOutput('winget_license_xml_uri', licenseXml);
+          core.setOutput('winget_dependencies_uri', depsZip);
+
+    - name: Make workdir
+      if: steps.version_check.outputs.installation_needed == 'true'
+      shell: powershell
+      run: |
+        $workDir = "${{ runner.temp }}\winget-setup"
+        if (Test-Path $workDir) {
+            Remove-Item -Path $workDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $workDir | Out-Null
+        echo "WINGET_WORK_DIR=$workDir" >> $env:GITHUB_ENV
+
+    - name: Download dependencies
+      if: steps.version_check.outputs.installation_needed == 'true'
       shell: powershell
       run: |
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Headers $headers -Uri "${{ steps.github_api.outputs.latest_winget_msix_bundle_uri }}" -OutFile "./winget.msixbundle"
+        $workDir = $env:WINGET_WORK_DIR
+        Invoke-WebRequest -Uri "${{ steps.github_api.outputs.winget_dependencies_uri }}" -OutFile "$workDir\winget_deps.zip"
+        Expand-Archive "$workDir\winget_deps.zip" -DestinationPath "$workDir\winget_deps" -Force
 
     - name: Download License
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
+      if: steps.version_check.outputs.installation_needed == 'true'
       shell: powershell
       run: |
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Headers $headers -Uri "${{ steps.github_api.outputs.latest_winget_license_xml_uri }}" -OutFile "./winget_License1.xml"
+        $workDir = $env:WINGET_WORK_DIR
+        Invoke-WebRequest -Uri "${{ steps.github_api.outputs.winget_license_xml_uri }}" -OutFile "$workDir\winget_License1.xml"
 
-    - name: Install Microsoft.UI.Xaml v2.8.6
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
+    - name: Download winget
+      if: steps.version_check.outputs.installation_needed == 'true'
       shell: powershell
       run: |
-        Add-AppxPackage .\microsoft.ui.xaml.2.8.6\tools\AppX\x64\Release\Microsoft.UI.Xaml.2.8.appx
-
-    - name: Install Microsoft.VCLibs.x64.14.00.Desktop
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
-      shell: powershell
-      run: |
-        Add-AppxPackage Microsoft.VCLibs.x64.14.00.Desktop.appx
+        $ProgressPreference = 'SilentlyContinue'
+        $workDir = $env:WINGET_WORK_DIR
+        Invoke-WebRequest -Uri "${{ steps.github_api.outputs.winget_msix_bundle_uri }}" -OutFile "$workDir\winget.msixbundle"
 
     - name: Install winget
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
+      if: steps.version_check.outputs.installation_needed == 'true'
       shell: powershell
       run: |
-        echo "PROVISIONING WINGET"
-        Add-AppxProvisionedPackage -Online -PackagePath ./winget.msixbundle -LicensePath ./winget_License1.xml
-
-    - name: Installing Winget
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
-      shell: powershell
-      run: |
-        echo "INSTALLING WINGET"
         $ProgressPreference = 'SilentlyContinue'
-        Add-AppxPackage .\winget.msixbundle
+        $workDir = $env:WINGET_WORK_DIR
+        $arch = switch -Regex ($env:PROCESSOR_ARCHITECTURE) {
+          'ARM64' { 'arm64' }
+          'AMD64' { 'x64' }
+          default { 'x86' }
+        }
 
-    - name: Cleanup Downloads
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
+        $depsRoot = "$workDir\winget_deps"
+        $archDir = Join-Path "$depsRoot" "$arch"
+        if (-not (Test-Path $archDir)) {
+          throw "Dependencies for architecture '$arch' not found under '$depsRoot'."
+        }
+
+        # Check if we're doing a downgrade
+        $installedVersion = '${{ steps.version_check.outputs.installed_version }}'
+        $desiredVersion = '${{ steps.resolve_target.outputs.desired_version }}'
+        $isDowngrade = $false
+
+        if ($installedVersion -and $desiredVersion) {
+          $isDowngrade = ([version]$installedVersion -gt [version]$desiredVersion)
+          if ($isDowngrade) {
+            Write-Host "Detected downgrade from $installedVersion to $desiredVersion"
+            Write-Host "Removing existing winget installation first..."
+            try {
+              Get-AppxPackage Microsoft.DesktopAppInstaller | Remove-AppxPackage -AllUsers
+            } catch {
+              Write-Warning "Failed to remove existing winget package: $($_.Exception.Message)"
+            }
+          }
+        }
+
+        # Install dependencies
+        Get-ChildItem -Path $archDir -Filter *.appx -File |
+          Sort-Object Name | ForEach-Object {
+            Write-Host "Installing dependency: $($_.Name)"
+            try {
+              Add-AppxPackage -Path $_.FullName -ForceApplicationShutdown
+            } catch {
+              # Friendly message if someone races you with a newer version
+              if ($_.Exception.Message -match '0x80073D06') {
+                  Write-Warning "Add-AppxPackage : The $($_.Name) package was not installed because a higher version of this package is already installed."
+              } else {
+                  throw
+              }
+            }
+          }
+
+        # Only use Add-AppxProvisionedPackage for fresh installs, not downgrades
+        if (-not $isDowngrade) {
+          try {
+            Add-AppxProvisionedPackage -Online -PackagePath "$workDir\winget.msixbundle" -LicensePath "$workDir\winget_License1.xml"
+          } catch {
+            Write-Warning "Add-AppxProvisionedPackage failed: $($_.Exception.Message)"
+            Write-Host "Continuing with Add-AppxPackage..."
+          }
+        }
+
+        Add-AppxPackage -ForceUpdateFromAnyVersion -ForceApplicationShutdown -Path "$workDir\winget.msixbundle"
+
+    - name: Wait for winget installation to complete
+      if: steps.version_check.outputs.installation_needed == 'true'
       shell: powershell
       run: |
-        rm Microsoft.VCLibs.x64.14.00.Desktop.appx
-        rm ./winget_License1.xml
-        rm ./winget.msixbundle
-        Remove-Item -Recurse -Force .\microsoft.ui.xaml.2.8.6
+        # Source shared utilities
+        . "${{ github.action_path }}\winget-utils.ps1"
 
-    - name: Wait to allow Installation to Finalize
-      if: steps.os_check.outputs.version == 'Microsoft Windows Server 2022 Datacenter'
-      shell: powershell
-      run: |
+        $desiredVersion = '${{ steps.resolve_target.outputs.desired_version }}'
+
         foreach ($i in 1..60) {
           Start-Sleep -Seconds 1
           Write-Host "Waiting for winget to install... ${i}"
-          if (Get-Command winget -ErrorAction SilentlyContinue) {
+          $installedVersion = Get-InstalledWingetVersion
+          if ($installedVersion -eq $desiredVersion) {
             break
           }
         }
 
-    - name: Output winget Version
+    - name: Output winget version
       id: winget-version
       shell: powershell
       run: |
-        $version=winget --version
-        Write-Host "$version"
-        Write-Output "winget-version=$version" >> $Env:GITHUB_OUTPUT
+        # Use the final version determined earlier (either existing or newly installed)
+        $installationNeeded = '${{ steps.version_check.outputs.installation_needed }}'
+        if ($installationNeeded -eq 'true') {
+          $finalVersion = '${{ steps.resolve_target.outputs.final_version }}'
+        } else {
+          $finalVersion = '${{ steps.version_check.outputs.installed_version }}'
+        }
 
+        # Verify with actual winget command
+        $actualVersion = winget --version
+        Write-Host "Actual winget version: $actualVersion"
+        Write-Host "Expected version: $finalVersion"
+
+        Write-Output "winget-version=$actualVersion" >> $Env:GITHUB_OUTPUT
